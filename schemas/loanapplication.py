@@ -1,8 +1,9 @@
 from datetime import date, datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator, model_validator
+from decimal import Decimal
 
 
 class LoanApplicationStatus(str, Enum):
@@ -95,6 +96,19 @@ class LoanApplicationResponse(LoanApplicationCreate):
     updated_at: Optional[datetime]
     submitted_at: Optional[datetime]
     reviewed_at: Optional[datetime]
+    agreement_id: Optional[int] = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def populate_agreement_id(cls, data: Any) -> Any:
+        if hasattr(data, 'loan_agreement'):
+            # data is an ORM model - return dict so Pydantic can process it
+            result = {}
+            for col in data.__table__.columns:
+                result[col.name] = getattr(data, col.name)
+            result['agreement_id'] = data.loan_agreement.agreement_id if data.loan_agreement else None
+            return result
+        return data
 
     class Config:
         from_attributes = True
@@ -164,3 +178,26 @@ class LoanApplicationUpdate(BaseModel):
     business_license_path: Optional[str] = None
     bank_statement_path: Optional[str] = None
     collateral_document_path: Optional[str] = None
+
+
+class RepaymentScheduleResponse(BaseModel):
+    """Schema for repayment schedule with late fee info"""
+    installment_number: int
+    due_date: Optional[datetime]
+    amount_due: float
+    late_fee: float
+    total_due: float
+    status: str
+    paid_amount: float
+    paid_date: Optional[datetime]
+    days_late: int
+    
+    class Config:
+        from_attributes = True
+
+class LateFeeInfoResponse(BaseModel):
+    """Schema for late fee information"""
+    loan_id: int
+    has_late_fees: bool
+    late_installments: list
+    total_late_fee_due: float

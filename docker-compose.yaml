@@ -1,0 +1,45 @@
+services:
+
+  loanpostgres:
+    image: postgres:16
+
+    container_name: postgres_db
+
+    restart: always
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres1234
+      POSTGRES_DB: loandb
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - loanmanagement-data:/var/lib/postgresql/data
+
+  backend:
+
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    environment:
+      DB_HOST: loanpostgres
+
+    container_name: fastapi_backend
+
+    ports:
+      - "8000:8000"
+
+    depends_on:
+      - loanpostgres
+
+    volumes:
+      - .:/app
+
+    env_file:
+      - .env.docker  # Use Docker-specific .env file
+
+volumes:
+  loanmanagement-data:

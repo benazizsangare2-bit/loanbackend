@@ -13,7 +13,7 @@ load_dotenv()
 
 # Password hashing configuration
 # This uses bcrypt algorithm (same as Go's bcrypt)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 
 # JWT configuration
 SECRET_KEY = os.getenv("SECRET_KEY")

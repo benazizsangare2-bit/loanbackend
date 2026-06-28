@@ -147,6 +147,95 @@ def get_application(
     
     return application
 
+# GET ALL ACTIVE LOANS FOR THE CURRENT USER (FOR DASHBOARD OVERVIEW)
+@loanrouter.get("/my-active-loans")
+def get_my_active_loans(
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all active loan agreements with next payment info for the current user"""
+    agreements = db.query(models.LoanAgreement).filter(
+        models.LoanAgreement.user_id == current_user.user_id,
+        models.LoanAgreement.status.in_(["approved", "disbursed", "active"])
+    ).all()
+    
+    result = []
+    for agreement in agreements:
+        next_payment = db.query(models.LoanRepaymentSchedule).filter(
+            models.LoanRepaymentSchedule.loan_agreement_id == agreement.agreement_id,
+            models.LoanRepaymentSchedule.status.in_(["pending", "late", "partial"])
+        ).order_by(models.LoanRepaymentSchedule.installment_number).first()
+        
+        total_paid = db.query(models.LoanPayment).filter(
+            models.LoanPayment.loan_agreement_id == agreement.agreement_id
+        ).with_entities(
+            models.LoanPayment.amount_paid
+        ).all()
+        total_paid_amount = sum(p.amount_paid for p in total_paid) if total_paid else 0
+        
+        result.append({
+            "agreement_id": agreement.agreement_id,
+            "application_id": agreement.application_id,
+            "approved_amount": agreement.approved_amount,
+            "interest_rate": agreement.interest_rate,
+            "duration_months": agreement.duration_months,
+            "monthly_payment": agreement.monthly_payment,
+            "total_repayment": agreement.total_repayment,
+            "total_paid": round(total_paid_amount, 2),
+            "remaining_balance": round(agreement.total_repayment - total_paid_amount, 2),
+            "status": agreement.status,
+            "signing_status": agreement.signing_status,
+            "disbursement_date": agreement.disbursement_date,
+            "first_payment_date": agreement.first_payment_date,
+            "next_payment": {
+                "amount_due": next_payment.amount_due if next_payment else None,
+                "due_date": next_payment.due_date if next_payment else None,
+                "status": next_payment.status if next_payment else None
+            } if next_payment else None
+        })
+    
+    return result
+
+# GET THE LOAN AGREEMENT DETAILS FOR A SPECIFIC AGREEMENT
+@loanrouter.get("/loan-agreement/{agreement_id}")
+def get_loan_agreement(
+    agreement_id: int,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get loan agreement details by agreement ID"""
+    agreement = db.query(models.LoanAgreement).filter(
+        models.LoanAgreement.agreement_id == agreement_id,
+        models.LoanAgreement.user_id == current_user.user_id
+    ).first()
+    
+    if not agreement:
+        raise HTTPException(status_code=404, detail="Loan agreement not found")
+    
+    return {
+        "agreement_id": agreement.agreement_id,
+        "application_id": agreement.application_id,
+        "user_id": agreement.user_id,
+        "approved_amount": agreement.approved_amount,
+        "interest_rate": agreement.interest_rate,
+        "duration_months": agreement.duration_months,
+        "monthly_payment": agreement.monthly_payment,
+        "total_repayment": agreement.total_repayment,
+        "total_interest": agreement.total_interest,
+        "approval_date": agreement.approval_date,
+        "disbursement_date": agreement.disbursement_date,
+        "first_payment_date": agreement.first_payment_date,
+        "final_payment_date": agreement.final_payment_date,
+        "completed_date": agreement.completed_date,
+        "status": agreement.status,
+        "approved_by": agreement.approved_by,
+        "disbursed_by": agreement.disbursed_by,
+        "approval_notes": agreement.approval_notes,
+        "signing_status": agreement.signing_status,
+        "created_at": agreement.created_at,
+        "updated_at": agreement.updated_at,
+    }
+
 # ENDPOINT THAT LETS THE CLIENTS VIEW THEIR PAYMENTS HISTORY
 @loanrouter.get("/my-loans/{loan_agreement_id}/payments")
 def get_payment_history(
@@ -235,4 +324,47 @@ def get_next_payment(
         "is_late": is_late,
         "days_late": days_late if is_late else 0,
         "status": next_payment.status
+    }
+
+# END POINT THAT SHOWS THE CLIENTS THAT THEY HAVE LATE FEES 
+@loanrouter.get("/my-loans/{loan_agreement_id}/late-fees")
+def get_current_late_fees(
+    loan_agreement_id: int,
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Show all pending late fees for client's loan"""
+    
+    # Verify loan belongs to user
+    agreement = db.query(models.LoanAgreement).filter(
+        models.LoanAgreement.agreement_id == loan_agreement_id,
+        models.LoanAgreement.user_id == current_user.user_id
+    ).first()
+    
+    if not agreement:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    
+    # Get all late installments
+    late_installments = db.query(models.LoanRepaymentSchedule).filter(
+        models.LoanRepaymentSchedule.loan_agreement_id == loan_agreement_id,
+        models.LoanRepaymentSchedule.status == "late"
+    ).all()
+    
+    total_late_fee = sum(i.late_fee for i in late_installments)
+    
+    return {
+        "loan_id": loan_agreement_id,
+        "has_late_fees": len(late_installments) > 0,
+        "late_installments": [
+            {
+                "installment": i.installment_number,
+                "due_date": i.due_date,
+                "days_late": i.days_late,
+                "normal_amount": i.amount_due,
+                "late_fee": i.late_fee,
+                "total_due": i.total_due
+            }
+            for i in late_installments
+        ],
+        "total_late_fee_due": round(total_late_fee, 2)
     }

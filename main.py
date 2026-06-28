@@ -4,15 +4,25 @@ Main application entry point.
 This is like your main.go file.
 """
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from database.connection import engine, Base
 from routers import loan_application, userauth, staffauth, loan_admin, upload
 import os
 from dotenv import load_dotenv
+from utils.logging_config import setup_logging
+from routers import signature  # Add this import
+from database import models
+
+BASE_DIR = Path(__file__).resolve().parent
+UPLOADS_DIR = BASE_DIR / "uploads"
 
 # Load environment variables
 load_dotenv()
+setup_logging()
 
 
 # Create database tables automatically on startup
@@ -53,6 +63,17 @@ app.include_router(staffauth.router)
 app.include_router(loan_application.loanrouter)
 app.include_router(loan_admin.adminrouter)
 app.include_router(upload.uploadrouter)
+app.include_router(signature.signaturerouter)
+
+# Serve uploaded loan documents at the same URLs stored in the database.
+LOAN_APP_UPLOADS_DIR = UPLOADS_DIR / "loan_applications"
+LOAN_APP_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount(
+    "/uploads/loan_applications",
+    StaticFiles(directory=str(LOAN_APP_UPLOADS_DIR)),
+    name="loan_application_uploads",
+)
+
 # Root endpoint for basic health check
 @app.get("/")
 def read_root():

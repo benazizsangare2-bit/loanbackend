@@ -3,7 +3,11 @@ Authentication routes - register and login endpoints for clients.
 This is like your functions folder in Go, but with route decorators.
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
+
+logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
 from database.connection import get_db
 from schemas import user as user_schemas
@@ -22,9 +26,16 @@ def register(
     db: Session = Depends(get_db)
 ):
     """Register a new user - OTP will be sent to email"""
+    logger.info("POST /client/auth/registerClient — email=%s", user_data.email)
+
     # Check if user already exists
     existing_user = user_utils.get_user_by_email(db, user_data.email)
     if existing_user:
+        logger.warning(
+            "Register failed — email already registered: %s (verified=%s)",
+            user_data.email,
+            existing_user.is_email_verified,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
@@ -33,11 +44,13 @@ def register(
     # Create user with OTP
     new_user, message = user_utils.create_user_with_otp(db, user_data)
     if not new_user:
+        logger.warning("Register failed — email=%s reason=%s", user_data.email, message)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=message
         )
     
+    logger.info("Register succeeded — user_id=%s email=%s", new_user.user_id, new_user.email)
     return new_user
 
 @clientrouter.post("/verify-otp")
@@ -145,9 +158,12 @@ def login(
     db: Session = Depends(get_db)
 ):
     """Login user and return JWT token"""
+    logger.info("POST /client/auth/ClientLogin — email=%s", user_data.email)
+
     # Find user by email
     user = user_utils.get_user_by_email(db, user_data.email)
     if not user:
+        logger.warning("Login failed — no user found for email=%s", user_data.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials"
@@ -155,6 +171,11 @@ def login(
     
     # Check if email is verified
     if not user.is_email_verified:
+        logger.warning(
+            "Login failed — email not verified: user_id=%s email=%s",
+            user.user_id,
+            user_data.email,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Please verify your email first. Check your inbox or Spam folder for OTP."
@@ -162,12 +183,34 @@ def login(
     
     # Verify password
     if not auth_utils.verify_password(user_data.password, user.hashed_password):
+        logger.warning(
+            "Login failed — incorrect password: user_id=%s email=%s",
+            user.user_id,
+            user_data.email,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password"
         )
-    
+    user_response = user_schemas.UserResponse(
+        user_id=user.user_id,
+        name=user.name,
+        email=user.email,
+        profession=user.profession,
+        phone_number=user.phone_number,
+        created_at=user.created_at,
+        updated_at=user.updated_at
+    )
     # Create access token
     access_token = auth_utils.create_access_token(data={"sub": user.email})
-    
-    return {"access_token": access_token, "token_type": "bearer"}
+    logger.info("Login succeeded — user_id=%s email=%s", user.user_id, user.email)
+
+    return {"access_token": access_token, "token_type": "bearer", "user":user_response}
+
+@clientrouter.get("/users/me", response_model=user_schemas.UserResponse)
+def get_current_user(
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get current logged-in user's profile"""
+    return current_user

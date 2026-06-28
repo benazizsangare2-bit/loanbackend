@@ -1,7 +1,13 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from database import models
 from schemas import loanapplication as loan_app_schemas
 from datetime import datetime, timedelta
+from utils.email_templates import get_loan_approved_email, get_loan_disbursed_email
+from utils.email import send_email
+import logging
+import os
+
+logger = logging.getLogger(__name__)
 
 
 def create_loan_application(
@@ -170,15 +176,29 @@ def submit_application(db: Session, application_id: int, user_id: int):
 # get a specific user's application
 def get_user_applications(db: Session, user_id: int, skip: int = 0, limit: int = 100):
     """Get all loan applications for a specific user"""
-    return db.query(models.LoanApplication).filter(
+    apps = db.query(models.LoanApplication).options(
+        joinedload(models.LoanApplication.loan_agreement)
+    ).filter(
         models.LoanApplication.user_id == user_id
     ).order_by(models.LoanApplication.created_at.desc()).offset(skip).limit(limit).all()
+    
+    for app in apps:
+        app.agreement_id = app.loan_agreement.agreement_id if app.loan_agreement else None
+    
+    return apps
 
 def get_application_by_id(db: Session, application_id: int):
     """Get a specific loan application by ID"""
-    return db.query(models.LoanApplication).filter(
+    app = db.query(models.LoanApplication).options(
+        joinedload(models.LoanApplication.loan_agreement)
+    ).filter(
         models.LoanApplication.application_id == application_id
     ).first()
+    
+    if app:
+        app.agreement_id = app.loan_agreement.agreement_id if app.loan_agreement else None
+    
+    return app
 
 def get_all_applications(db: Session, status: str = None, skip: int = 0, limit: int = 100):
     """Get all loan applications (admin use)"""
@@ -289,24 +309,26 @@ def calculate_amortization_schedule(principal, annual_rate, months):
     if monthly_rate == 0:
         monthly_payment = principal / months
     else:
+        # Standard amortization formula
         monthly_payment = principal * (monthly_rate * (1 + monthly_rate) ** months) / ((1 + monthly_rate) ** months - 1)
-    
-    total_repayment = monthly_payment * months
-    total_interest = total_repayment - principal
+
+    monthly_payment = round(monthly_payment, 2)
+    total_repayment = round (monthly_payment * months, 2)
+    total_interest = round (total_repayment - principal, 2)
     
     # Generate individual payment schedule
     schedule = []
     remaining = principal
     
     for month in range(1, months + 1):
-        interest_due = remaining * monthly_rate
-        principal_due = monthly_payment - interest_due
+        interest_due = round (remaining * monthly_rate, 2)
+        principal_due = round (monthly_payment - interest_due, 2)
         
         if month == months:  # Last month adjustment for rounding
-            principal_due = remaining
-            monthly_payment = principal_due + interest_due
+            principal_due = round (remaining, 2)
+            monthly_payment = round (principal_due + interest_due, 2)
         
-        remaining -= principal_due
+        remaining = round (remaining - principal_due, 2)
         
         schedule.append({
             "installment_number": month,
@@ -317,19 +339,22 @@ def calculate_amortization_schedule(principal, annual_rate, months):
         })
     
     return {
-        "monthly_payment": round(monthly_payment, 2),
-        "total_repayment": round(total_repayment, 2),
-        "total_interest": round(total_interest, 2),
+        "monthly_payment": monthly_payment,
+        "total_repayment": total_repayment,
+        "total_interest": total_interest,
         "schedule": schedule
     }
 
 # CREATE LOAN AGREEMENT AND SCHEDULE FOR THE APPROVED APPLICATION
-def approve_application(db: Session, application_id: int, staff_id: str, 
-                        approved_amount: float = None, 
-                        interest_rate: float = None,
-                        duration_months: int = None,
-                        disbursement_date: datetime = None,
-                        approval_notes: str = None):
+def approve_application(
+    db: Session,
+    application_id: int,
+    staff_id: str,
+    approved_amount: float = None,
+    interest_rate: float = None,
+    duration_months: int = None,
+    approval_notes: str = None,
+):
     """Approve a loan application - creates agreement and payment schedule"""
     
     application = get_application_by_id_admin(db, application_id)
@@ -348,6 +373,7 @@ def approve_application(db: Session, application_id: int, staff_id: str,
     calculation = calculate_amortization_schedule(final_amount, final_rate, final_duration)
     
     # Create loan agreement
+    approval_date = datetime.now()
     agreement = models.LoanAgreement(
         application_id=application_id,
         user_id=application.user_id,
@@ -357,7 +383,8 @@ def approve_application(db: Session, application_id: int, staff_id: str,
         monthly_payment=calculation["monthly_payment"],
         total_repayment=calculation["total_repayment"],
         total_interest=calculation["total_interest"],
-        approval_date=datetime.now(),
+        approval_date=approval_date,
+        first_payment_date=approval_date + timedelta(days=30),
         approved_by=staff_id,
         approval_notes=approval_notes,
         status="approved"
@@ -367,20 +394,22 @@ def approve_application(db: Session, application_id: int, staff_id: str,
     
     # Generate repayment schedule
     for installment in calculation["schedule"]:
+        due_date = approval_date + timedelta(days=30 * installment["installment_number"])
         
         schedule_item = models.LoanRepaymentSchedule(
             loan_agreement_id=agreement.agreement_id,
             user_id=application.user_id,
             installment_number=installment["installment_number"],
-            due_date=None,
+            due_date=due_date,
             amount_due=installment["amount_due"],
             principal_due=installment["principal_due"],
             interest_due=installment["interest_due"],
             remaining_principal=installment["remaining_principal"],
+            total_due=installment["amount_due"],
             status="pending"
         )
         db.add(schedule_item)
-    
+
     # Update application status
     application.status = "approved"
     application.reviewed_by = staff_id
@@ -388,6 +417,22 @@ def approve_application(db: Session, application_id: int, staff_id: str,
     application.review_notes = approval_notes
     
     db.commit()
+
+    # After the commit, send the email (non-critical — don't rollback if it fails)
+    try:
+        user = db.query(models.User).filter(models.User.user_id == application.user_id).first()
+        if user:
+            subject, html = get_loan_approved_email(
+                user.name,
+                final_amount,
+                calculation["monthly_payment"],
+                final_rate,
+                final_duration,
+                agreement.agreement_id,
+            )
+            send_email(user.email, subject, html)
+    except Exception:
+        logger.exception("Failed to send approval email for application_id=%s", application_id)
     
     return application, "Loan approved successfully"
 
@@ -405,6 +450,10 @@ def mark_disbursed(db: Session, loan_agreement_id: int, staff_id: str,
     if not agreement:
         return None, "Loan agreement not found"
     
+     # Check if agreement is signed
+    if agreement.signing_status != "signed":
+        return None, "Cannot disburse: Agreement has not been signed by client"
+
     # Only approved loans can be disbursed
     if agreement.status != "approved":
         return None, f"Cannot disburse loan with status: {agreement.status}. Expected 'approved'"
@@ -417,9 +466,11 @@ def mark_disbursed(db: Session, loan_agreement_id: int, staff_id: str,
     agreement.disbursement_date = disbursement_date
     agreement.disbursed_by = staff_id
     agreement.status = "disbursed"
+    if notes:
+        agreement.disbursement_notes = notes
     agreement.first_payment_date = disbursement_date + timedelta(days=30)
     agreement.final_payment_date = disbursement_date + timedelta(days=30 * agreement.duration_months)
-    
+
     # Get all schedule items for this loan
     schedule_items = db.query(models.LoanRepaymentSchedule).filter(
         models.LoanRepaymentSchedule.loan_agreement_id == loan_agreement_id
@@ -432,21 +483,30 @@ def mark_disbursed(db: Session, loan_agreement_id: int, staff_id: str,
     for item in schedule_items:
         # Due date = disbursement_date + (30 days × installment number)
         item.due_date = disbursement_date + timedelta(days=30 * item.installment_number)
-        # Status remains "pending"
     
     db.commit()
+
+    # Send email after commit — non-critical
+    try:
+        user = db.query(models.User).filter(models.User.user_id == agreement.user_id).first()
+        if user:
+            subject, html = get_loan_disbursed_email(
+                user.name,
+                agreement.first_payment_date,
+                agreement.monthly_payment,
+            )
+            send_email(user.email, subject, html)
+    except Exception:
+        logger.exception("Failed to send disbursement email for agreement_id=%s", loan_agreement_id)
     
     return agreement, "Loan disbursed successfully"
 
 
-# RECORD PAYMENTS MADE WHEN STARTING TO PAY BACK
+# RECORD PAYMENTS MADE WHEN STARTING TO PAY BACK - AND CALCULATE AND APPLY LATE FEES
 def record_payment(db: Session, loan_agreement_id: int, staff_id: str, 
                    amount_paid: float, payment_method: str, 
                    reference_number: str = None, notes: str = None):
-    """
-    Record a payment made by client
-    Automatically allocates to oldest pending installment first
-    """
+    """Record a payment - late fee is already calculated by daily job"""
     
     # Get loan agreement
     agreement = db.query(models.LoanAgreement).filter(
@@ -456,14 +516,13 @@ def record_payment(db: Session, loan_agreement_id: int, staff_id: str,
     if not agreement:
         return None, "Loan agreement not found"
     
-    # Check if loan is in active/disbursed status
     if agreement.status not in ["disbursed", "active"]:
         return None, f"Cannot record payment for loan with status: {agreement.status}"
     
     # Get all pending installments (oldest first)
     pending_installments = db.query(models.LoanRepaymentSchedule).filter(
         models.LoanRepaymentSchedule.loan_agreement_id == loan_agreement_id,
-        models.LoanRepaymentSchedule.status.in_(["pending", "partial"])
+        models.LoanRepaymentSchedule.status.in_(["pending", "late", "partial"])
     ).order_by(models.LoanRepaymentSchedule.installment_number).all()
     
     if not pending_installments:
@@ -473,44 +532,78 @@ def record_payment(db: Session, loan_agreement_id: int, staff_id: str,
     installments_affected = []
     total_principal = 0
     total_interest = 0
+    total_late_fee = 0
     
-    # Apply payment to installments
     for installment in pending_installments:
         if remaining_amount <= 0:
             break
         
-        # Calculate remaining due for this installment
-        remaining_due = installment.amount_due - installment.paid_amount
+        # Get total due (already includes late fee from daily job)
+        total_due = installment.total_due
+        remaining_due = total_due - installment.paid_amount
         
         if remaining_amount >= remaining_due:
             # Full payment for this installment
-            paid_principal = installment.principal_due - (installment.principal_due * (installment.paid_amount / installment.amount_due)) if installment.paid_amount > 0 else installment.principal_due
-            paid_interest = installment.interest_due - (installment.interest_due * (installment.paid_amount / installment.amount_due)) if installment.paid_amount > 0 else installment.interest_due
+            # Calculate late fee portion for this installment
+            late_fee_remaining = installment.late_fee - (installment.paid_amount if installment.paid_amount < installment.late_fee else 0)
+            late_fee_portion = min(late_fee_remaining, remaining_amount)
+            installment.penalty_paid = True 
+            
+            # Calculate normal payment portion
+            normal_payment = remaining_due - late_fee_portion
+            
+            # Calculate principal/interest split from normal payment
+            if installment.amount_due > 0:
+                payment_ratio = normal_payment / installment.amount_due
+                principal_portion = round(installment.principal_due * payment_ratio, 2)
+                interest_portion = round(installment.interest_due * payment_ratio, 2)
+            else:
+                principal_portion = 0
+                interest_portion = 0
             
             installment.status = "paid"
-            installment.paid_amount = installment.amount_due
+            installment.paid_amount = total_due
             installment.paid_date = datetime.now()
             
-            total_principal += paid_principal
-            total_interest += paid_interest
+            total_principal += principal_portion
+            total_interest += interest_portion
+            total_late_fee += late_fee_portion
             remaining_amount -= remaining_due
             installments_affected.append(str(installment.installment_number))
             
         else:
-            # Partial payment
-            # Calculate ratio of payment to determine principal/interest split
-            payment_ratio = remaining_amount / installment.amount_due
-            paid_principal = round(installment.principal_due * payment_ratio, 2)
-            paid_interest = round(installment.interest_due * payment_ratio, 2)
+            # Partial payment - apply to late fee first
+            # First, pay off any remaining late fee for this installment
+            late_fee_remaining = installment.late_fee - max(0, installment.paid_amount)
+            
+            if late_fee_remaining > 0:
+                late_fee_portion = min(late_fee_remaining, remaining_amount)
+                total_late_fee += late_fee_portion
+                installment.paid_amount += late_fee_portion
+                remaining_amount -= late_fee_portion
+            
+            # If still money left, apply to normal payment
+            if remaining_amount > 0:
+                normal_remaining = installment.amount_due - max(0, installment.paid_amount - installment.late_fee)
+                normal_portion = min(normal_remaining, remaining_amount)
+                
+                if installment.amount_due > 0:
+                    payment_ratio = normal_portion / installment.amount_due
+                    principal_portion = round(installment.principal_due * payment_ratio, 2)
+                    interest_portion = round(installment.interest_due * payment_ratio, 2)
+                else:
+                    principal_portion = 0
+                    interest_portion = 0
+                
+                total_principal += principal_portion
+                total_interest += interest_portion
+                installment.paid_amount += normal_portion
+                remaining_amount -= normal_portion
             
             installment.status = "partial"
-            installment.paid_amount += remaining_amount
             installment.paid_date = datetime.now()
-            
-            total_principal += paid_principal
-            total_interest += paid_interest
             installments_affected.append(f"{installment.installment_number}(partial)")
-            remaining_amount = 0
+            break
     
     # Create payment record
     payment_record = models.LoanPayment(
@@ -521,7 +614,7 @@ def record_payment(db: Session, loan_agreement_id: int, staff_id: str,
         payment_method=payment_method,
         principal_paid=round(total_principal, 2),
         interest_paid=round(total_interest, 2),
-        penalty_paid=0,
+        penalty_paid=round(total_late_fee, 2),
         installments_covered=",".join(installments_affected),
         reference_number=reference_number,
         recorded_by=staff_id,
@@ -532,7 +625,7 @@ def record_payment(db: Session, loan_agreement_id: int, staff_id: str,
     # Check if all installments are paid
     remaining_pending = db.query(models.LoanRepaymentSchedule).filter(
         models.LoanRepaymentSchedule.loan_agreement_id == loan_agreement_id,
-        models.LoanRepaymentSchedule.status.in_(["pending", "partial"])
+        models.LoanRepaymentSchedule.status.in_(["pending", "late", "partial"])
     ).count()
     
     if remaining_pending == 0:
@@ -543,4 +636,58 @@ def record_payment(db: Session, loan_agreement_id: int, staff_id: str,
     
     db.commit()
     
-    return payment_record, f"Payment recorded successfully. Affected installments: {','.join(installments_affected)}"
+    return payment_record, f"Payment recorded successfully. Installments: {','.join(installments_affected)}"
+
+
+# FUNCTION THAT RUNS DAILY TO GET THE FEES
+def update_daily_late_fees(db: Session):
+    """Run daily to update late fees for all overdue installments"""
+    
+    today = datetime.now().date()
+    grace_days = int(os.getenv("LATE_FEE_GRACE_DAYS", 7))
+    base_rate = float(os.getenv("LATE_FEE_BASE_RATE", 2.0))
+    increment_rate = float(os.getenv("LATE_FEE_INCREMENT_RATE", 1.0))
+    max_rate = float(os.getenv("LATE_FEE_MAX_RATE", 20.0))
+    
+    # Find all pending/late installments with due_date < today
+    overdue = db.query(models.LoanRepaymentSchedule).filter(
+        models.LoanRepaymentSchedule.due_date < today,
+        models.LoanRepaymentSchedule.status.in_(["pending", "late"])
+    ).all()
+    
+    updated_count = 0
+    
+    for installment in overdue:
+        due_date = installment.due_date.date()
+        days_late = (today - due_date).days
+        
+        # No fee during grace period
+        if days_late <= grace_days:
+            installment.status = "pending"
+            installment.days_late = 0
+            installment.late_fee = 0.0
+        else:
+            # Calculate late fee based on days late
+            days_after_grace = days_late - grace_days
+            additional_months = days_after_grace // 30
+            rate = base_rate + (additional_months * increment_rate)
+            rate = min(rate, max_rate)
+            
+            late_fee = installment.amount_due * (rate / 100)
+            installment.late_fee = round(late_fee, 2)
+            installment.status = "late"
+            installment.days_late = days_late
+            installment.late_fee_updated_at = datetime.now()
+        
+        # Update total due
+        installment.total_due = installment.amount_due + installment.late_fee
+        
+        # If already partially paid, adjust total_due
+        if installment.paid_amount > 0:
+            if installment.paid_amount >= installment.total_due:
+                installment.status = "paid"
+        
+        updated_count += 1
+    
+    db.commit()
+    return updated_count

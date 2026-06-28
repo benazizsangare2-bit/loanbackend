@@ -3,7 +3,7 @@ Database helper functions for common operations.
 This centralizes database queries so you don't repeat code.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 from sqlalchemy.orm import Session
 from database import models
@@ -80,7 +80,7 @@ def verify_otp(db: Session, email: str, otp_code: str):
     if user.otp_code != otp_code:
         return False, "Invalid OTP code"
     
-    if user.otp_expiry < datetime.now():
+    if user.otp_expiry < datetime.now(timezone.utc):
         return False, "OTP has expired"
     
     # Mark as verified - account becomes active
@@ -124,7 +124,7 @@ def create_password_reset_token(db: Session, email: str):
     
     # Generate reset token
     reset_token = auth_utils.create_access_token(data={"sub": email, "type": "password_reset"})
-    reset_expiry = datetime.now() + datetime.timedelta(hours=1)
+    reset_expiry = datetime.now() + timedelta(hours=1)
     
     user.reset_token = reset_token
     user.reset_token_expiry = reset_expiry
@@ -134,7 +134,7 @@ def create_password_reset_token(db: Session, email: str):
     success, message = send_password_reset_email(email, reset_token, user.name)
     
     if success:
-        return True, "Password reset email sent"
+        return True, f"Password reset email sent" 
     else:
         return False, f"Failed to send reset email: {message}"
 
@@ -158,7 +158,7 @@ def reset_password(db: Session, token: str, new_password: str):
     if user.reset_token != token:
         return False, "Invalid token"
     
-    if user.reset_token_expiry < datetime.now():
+    if user.reset_token_expiry < datetime.now(timezone.utc):
         return False, "Token has expired"
     
     # Update password

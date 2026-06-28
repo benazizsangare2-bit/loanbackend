@@ -210,6 +210,9 @@ class LoanAgreement(Base):
     
     # Notes
     approval_notes = Column(Text, nullable=True)
+    disbursement_notes = Column(Text, nullable=True)
+
+    signing_status = Column(String(20), default="pending")  # pending, signed, expired, revoked
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -220,6 +223,7 @@ class LoanAgreement(Base):
     user = relationship("User")
     payment_schedule = relationship("LoanRepaymentSchedule", back_populates="loan_agreement", cascade="all, delete-orphan")
     payments = relationship("LoanPayment", back_populates="loan_agreement", cascade="all, delete-orphan")
+    signature = relationship("LoanAgreementSignature", back_populates="agreement", uselist=False)
 
 
 class LoanRepaymentSchedule(Base):
@@ -237,6 +241,11 @@ class LoanRepaymentSchedule(Base):
     principal_due = Column(Float, nullable=False)
     interest_due = Column(Float, nullable=False)
     remaining_principal = Column(Float, nullable=False)  # After this payment
+
+    # NEW FIELDS - Add these
+    late_fee = Column(Float, default=0.0)
+    total_due = Column(Float, nullable=False)  # amount_due + late_fee
+    late_fee_updated_at = Column(DateTime(timezone=True), nullable=True)
     
     # Payment tracking
     status = Column(String(50), default="pending")  # pending, paid, partial, late, defaulted
@@ -274,6 +283,7 @@ class LoanPayment(Base):
     principal_paid = Column(Float, nullable=False)
     interest_paid = Column(Float, nullable=False)
     penalty_paid = Column(Float, default=0.0)
+
     
     # Which installments this covers (e.g., "1,2,3" or "1-3")
     installments_covered = Column(String(200), nullable=True)
@@ -285,6 +295,7 @@ class LoanPayment(Base):
     # Admin who recorded this
     recorded_by = Column(String(50), nullable=True)
     notes = Column(Text, nullable=True)
+
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -292,3 +303,27 @@ class LoanPayment(Base):
     # Relationships
     loan_agreement = relationship("LoanAgreement", back_populates="payments")
     user = relationship("User")
+
+
+class LoanAgreementSignature (Base):
+    __tablename__= "loan_agreement_signatures"
+
+    signature_id = Column (Integer, primary_key=True, index=True)
+    agreement_id = Column (Integer, ForeignKey ("loan_agreements.agreement_id"), nullable=False)
+    user_id = Column (Integer, ForeignKey ("users.user_id"), nullable =False )
+    signed_name = Column (String(255), nullable=False)
+    agreed_to_terms = Column (Boolean, default=True)
+    signature_hash = Column (String(255), nullable = True)
+    signed_at = Column (DateTime(timezone=True), server_default=func.now())
+    ip_address = Column (String(45), nullable = True)
+    user_agent = Column (String(45), nullable = True)
+    signature_type = Column (String(20), default="typed")
+    verification_token = Column (String(255), nullable = True) #for emal verification
+    token_expires_at = Column (DateTime(timezone=True))
+    is_valid = Column (Boolean, default=True)
+
+     # Relationships
+    agreement = relationship("LoanAgreement", back_populates="signature")
+    user = relationship("User")
+
+    

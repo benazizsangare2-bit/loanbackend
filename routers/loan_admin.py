@@ -103,13 +103,16 @@ def mark_as_under_review(
 
 
 # MARK AN APPLICATION AS APPROVED
+class ApproveRequest(BaseModel):
+    approved_amount: Optional[float] = None
+    interest_rate: Optional[float] = None
+    duration_months: Optional[int] = None
+    approval_notes: Optional[str] = None
+
 @adminrouter.put("/{application_id}/approve")
 def approve_application(
     application_id: int,
-    approved_amount: Optional[float] = None,
-    interest_rate: Optional[float] = None,
-    duration_months: Optional[int] = None,
-    approval_notes: Optional[str] = None,
+    params: ApproveRequest,
     current_staff = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
@@ -120,7 +123,7 @@ def approve_application(
     
     application, message = loan_app_utils.approve_application(
         db, application_id, current_staff.employee_id,
-        approved_amount, interest_rate, duration_months, approval_notes
+        params.approved_amount, params.interest_rate, params.duration_months, params.approval_notes
     )
     
     if not application:
@@ -186,6 +189,23 @@ def disburse_loan(
     }
 
 
+def _serialize_schedule_item(item):
+    return {
+        "installment_number": item.installment_number,
+        "due_date": item.due_date.isoformat() if item.due_date else None,
+        "amount_due": item.amount_due,
+        "principal_due": item.principal_due,
+        "interest_due": item.interest_due,
+        "remaining_principal": item.remaining_principal,
+        "late_fee": item.late_fee or 0.0,
+        "total_due": item.total_due,
+        "status": item.status,
+        "paid_amount": item.paid_amount or 0.0,
+        "paid_date": item.paid_date.isoformat() if item.paid_date else None,
+        "days_late": item.days_late or 0,
+    }
+
+
 # CREATE THE REPAY SCHEDULE FOR A CLIENT 
 @adminrouter.get("/my-loans/{loan_agreement_id}/schedule")
 def get_repayment_schedule(
@@ -193,31 +213,52 @@ def get_repayment_schedule(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get repayment schedule for a specific loan"""
-    
-    # Verify loan belongs to user
+    """Get repayment schedule for a specific loan (client access)"""
     agreement = db.query(models.LoanAgreement).filter(
         models.LoanAgreement.agreement_id == loan_agreement_id,
         models.LoanAgreement.user_id == current_user.user_id
     ).first()
-    
     if not agreement:
         raise HTTPException(status_code=404, detail="Loan not found")
-    
-    # Get schedule items
     schedule = db.query(models.LoanRepaymentSchedule).filter(
         models.LoanRepaymentSchedule.loan_agreement_id == loan_agreement_id
     ).order_by(models.LoanRepaymentSchedule.installment_number).all()
-    
     return {
         "loan_agreement_id": loan_agreement_id,
         "approved_amount": agreement.approved_amount,
         "interest_rate": agreement.interest_rate,
         "monthly_payment": agreement.monthly_payment,
         "total_repayment": agreement.total_repayment,
-        "disbursement_date": agreement.disbursement_date,
-        "first_payment_date": agreement.first_payment_date,
-        "schedule": schedule
+        "disbursement_date": agreement.disbursement_date.isoformat() if agreement.disbursement_date else None,
+        "first_payment_date": agreement.first_payment_date.isoformat() if agreement.first_payment_date else None,
+        "schedule": [_serialize_schedule_item(s) for s in schedule]
+    }
+
+
+@adminrouter.get("/admin/my-loans/{loan_agreement_id}/schedule")
+def get_admin_repayment_schedule(
+    loan_agreement_id: int,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get repayment schedule for a specific loan (admin access)"""
+    agreement = db.query(models.LoanAgreement).filter(
+        models.LoanAgreement.agreement_id == loan_agreement_id
+    ).first()
+    if not agreement:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    schedule = db.query(models.LoanRepaymentSchedule).filter(
+        models.LoanRepaymentSchedule.loan_agreement_id == loan_agreement_id
+    ).order_by(models.LoanRepaymentSchedule.installment_number).all()
+    return {
+        "loan_agreement_id": loan_agreement_id,
+        "approved_amount": agreement.approved_amount,
+        "interest_rate": agreement.interest_rate,
+        "monthly_payment": agreement.monthly_payment,
+        "total_repayment": agreement.total_repayment,
+        "disbursement_date": agreement.disbursement_date.isoformat() if agreement.disbursement_date else None,
+        "first_payment_date": agreement.first_payment_date.isoformat() if agreement.first_payment_date else None,
+        "schedule": [_serialize_schedule_item(s) for s in schedule]
     }
 
 
@@ -273,3 +314,170 @@ def record_payment(
         "interest_paid": payment.interest_paid,
         "installments_covered": payment.installments_covered
     }
+
+    # FUNCTION TO MANUALLY CALCULATE LATE FEE RECALCULATION FOR ALL LOANS 
+@adminrouter.post("/admin/recalculate-late-fees")
+def recalculate_all_late_fees(
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Manually trigger late fee recalculation for all loans"""
+    
+    if not current_staff.can_approve_loans:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    updated_count = loan_app_utils.update_daily_late_fees(db)
+    
+    return {"message": f"Late fees recalculated successfully", "updated_installments": updated_count}
+
+
+# GET THE LIST OF ALL LOAN AGREEMENTS (Admin only)
+@adminrouter.get("/admin/agreements", response_model=list)
+def get_all_agreements(
+    skip: int = 0,
+    limit: int = 100,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get all loan agreements in the system (admin only)"""
+    agreements = db.query(models.LoanAgreement).order_by(models.LoanAgreement.created_at.desc()).offset(skip).limit(limit).all()
+    
+    result = []
+    for agreement in agreements:
+        signature = db.query(models.LoanAgreementSignature).filter(
+            models.LoanAgreementSignature.agreement_id == agreement.agreement_id,
+            models.LoanAgreementSignature.is_valid == True
+        ).first()
+        
+        application = db.query(models.LoanApplication).filter(
+            models.LoanApplication.application_id == agreement.application_id
+        ).first()
+        
+        result.append({
+            "agreement_id": agreement.agreement_id,
+            "application_id": agreement.application_id,
+            "user_id": agreement.user_id,
+            "client_name": agreement.user.name if agreement.user else (application.full_name if application else None),
+            "client_email": agreement.user.email if agreement.user else (application.email_address if application else None),
+            "approved_amount": agreement.approved_amount,
+            "interest_rate": agreement.interest_rate,
+            "duration_months": agreement.duration_months,
+            "monthly_payment": agreement.monthly_payment,
+            "total_repayment": agreement.total_repayment,
+            "status": agreement.status,
+            "signing_status": agreement.signing_status,
+            "approval_date": agreement.approval_date,
+            "disbursement_date": agreement.disbursement_date,
+            "created_at": agreement.created_at,
+            "signature": {
+                "signed_name": signature.signed_name if signature else None,
+                "signed_at": signature.signed_at if signature else None,
+                "ip_address": signature.ip_address if signature else None
+            } if signature else None,
+            "is_signed": signature is not None
+        })
+    return result
+
+
+# GET DETAILS OF A SPECIFIC AGREEMENT (Admin only)
+@adminrouter.get("/admin/agreements/{agreement_id}")
+def get_admin_agreement_detail(
+    agreement_id: int,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get detailed single agreement terms, signatures, and schedule"""
+    agreement = db.query(models.LoanAgreement).filter(
+        models.LoanAgreement.agreement_id == agreement_id
+    ).first()
+    
+    if not agreement:
+        raise HTTPException(status_code=404, detail="Agreement not found")
+        
+    signature = db.query(models.LoanAgreementSignature).filter(
+        models.LoanAgreementSignature.agreement_id == agreement_id,
+        models.LoanAgreementSignature.is_valid == True
+    ).first()
+    
+    application = db.query(models.LoanApplication).filter(
+        models.LoanApplication.application_id == agreement.application_id
+    ).first()
+    
+    schedule = db.query(models.LoanRepaymentSchedule).filter(
+        models.LoanRepaymentSchedule.loan_agreement_id == agreement_id
+    ).order_by(models.LoanRepaymentSchedule.installment_number).all()
+    
+    return {
+        "agreement_id": agreement.agreement_id,
+        "application_id": agreement.application_id,
+        "user_id": agreement.user_id,
+        "client_name": agreement.user.name if agreement.user else (application.full_name if application else None),
+        "client_email": agreement.user.email if agreement.user else (application.email_address if application else None),
+        "client_phone": application.phone_number if application else None,
+        "approved_amount": agreement.approved_amount,
+        "interest_rate": agreement.interest_rate,
+        "duration_months": agreement.duration_months,
+        "monthly_payment": agreement.monthly_payment,
+        "total_repayment": agreement.total_repayment,
+        "total_interest": agreement.total_interest,
+        "approval_date": agreement.approval_date,
+        "disbursement_date": agreement.disbursement_date,
+        "first_payment_date": agreement.first_payment_date,
+        "final_payment_date": agreement.final_payment_date,
+        "completed_date": agreement.completed_date,
+        "status": agreement.status,
+        "signing_status": agreement.signing_status,
+        "approved_by": agreement.approved_by,
+        "disbursed_by": agreement.disbursed_by,
+        "approval_notes": agreement.approval_notes,
+        "created_at": agreement.created_at,
+        "updated_at": agreement.updated_at,
+        "signature": {
+            "signed_name": signature.signed_name if signature else None,
+            "signed_at": signature.signed_at if signature else None,
+            "ip_address": signature.ip_address if signature else None,
+            "user_agent": signature.user_agent if signature else None,
+            "signature_type": signature.signature_type if signature else None
+        } if signature else None,
+        "is_signed": signature is not None,
+        "schedule": [
+            {
+                "installment_number": item.installment_number,
+                "due_date": item.due_date,
+                "amount_due": item.amount_due,
+                "principal_due": item.principal_due,
+                "interest_due": item.interest_due,
+                "remaining_principal": item.remaining_principal,
+                "late_fee": item.late_fee,
+                "total_due": item.total_due,
+                "status": item.status,
+                "paid_amount": item.paid_amount,
+                "paid_date": item.paid_date
+            }
+            for item in schedule
+        ]
+    }
+
+
+# PATCH endpoint for updating an application by admin
+@adminrouter.patch("/admin/application/{application_id}")
+def update_application_admin(
+    application_id: int,
+    update_data: loan_app_schemas.LoanApplicationUpdate,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Update application fields partially as an administrator"""
+    application = loan_app_utils.get_application_by_id_admin(db, application_id)
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    
+    update_dict = {k: v for k, v in update_data.dict().items() if v is not None}
+    
+    for key, value in update_dict.items():
+        if hasattr(application, key):
+            setattr(application, key, value)
+            
+    db.commit()
+    db.refresh(application)
+    return {"message": "Application updated successfully by admin", "application_id": application.application_id}
