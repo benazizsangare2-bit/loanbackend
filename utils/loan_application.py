@@ -357,6 +357,10 @@ def calculate_amortization_schedule(principal, annual_rate, months):
             "remaining_principal": round(max(remaining, 0), 2)
         })
     
+    # Compute total_repayment from actual installment amounts to avoid rounding discrepancy
+    total_repayment = round(sum(item["amount_due"] for item in schedule), 2)
+    total_interest = round(total_repayment - principal, 2)
+    
     return {
         "monthly_payment": monthly_payment,
         "total_repayment": total_repayment,

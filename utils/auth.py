@@ -18,7 +18,7 @@ pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 # JWT configuration
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production-use-a-real-secret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 720))
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """

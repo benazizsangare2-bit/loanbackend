@@ -263,6 +263,31 @@ def get_admin_repayment_schedule(
     }
 
 
+@adminrouter.get("/admin/my-loans/{loan_agreement_id}/payments")
+def get_admin_payment_history(
+    loan_agreement_id: int,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get payment history for a specific loan (admin access)"""
+    agreement = db.query(models.LoanAgreement).filter(
+        models.LoanAgreement.agreement_id == loan_agreement_id
+    ).first()
+    if not agreement:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    payments = db.query(models.LoanPayment).filter(
+        models.LoanPayment.loan_agreement_id == loan_agreement_id
+    ).order_by(models.LoanPayment.payment_date.desc()).all()
+    return {
+        "loan_agreement_id": loan_agreement_id,
+        "approved_amount": agreement.approved_amount,
+        "monthly_payment": agreement.monthly_payment,
+        "total_repayment": agreement.total_repayment,
+        "total_paid_to_date": round(sum(p.amount_paid for p in payments), 2) if payments else 0,
+        "payments": payments
+    }
+
+
 # PAYMENT ENDPOINT TO RECORD A PAYMENT MADE BY  
 class PaymentRecord(BaseModel):
     """Schema for recording a payment"""
