@@ -3,7 +3,7 @@ This file defines your database tables (like schema.go in Go).
 Each class here represents a table in PostgreSQL.
 """
 
-from sqlalchemy import Column, Date, Integer, String, Boolean, DateTime, Float, Text
+from sqlalchemy import Column, Date, Integer, String, Boolean, DateTime, Float, Text, Index
 from sqlalchemy.schema import ForeignKey
 from sqlalchemy.sql import func
 from database.connection import Base
@@ -270,6 +270,12 @@ class LoanPayment(Base):
     """Loan Payments - records actual payments made by client"""
     __tablename__ = "loan_payments"
     
+    __table_args__ = (
+        Index('ix_loan_payments_unique_reference', 'loan_agreement_id', 'reference_number',
+              unique=True,
+              postgresql_where="reference_number IS NOT NULL"),
+    )
+    
     loanpaymentid = Column(Integer, primary_key=True, index=True)
     loan_agreement_id = Column(Integer, ForeignKey("loan_agreements.agreement_id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
@@ -303,6 +309,19 @@ class LoanPayment(Base):
     # Relationships
     loan_agreement = relationship("LoanAgreement", back_populates="payments")
     user = relationship("User")
+
+
+class AuditLog(Base):
+    """Audit log for tracking all administrative actions on loans"""
+    __tablename__ = "audit_logs"
+
+    log_id = Column(Integer, primary_key=True, index=True)
+    action = Column(String(50), nullable=False)  # approve, reject, review, disburse, record_payment, recalculate_late_fees
+    performed_by = Column(String(50), nullable=False)  # employee_id
+    target_type = Column(String(50), nullable=False)  # loan_application, loan_agreement, loan_payment
+    target_id = Column(Integer, nullable=False)
+    details = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class LoanAgreementSignature (Base):

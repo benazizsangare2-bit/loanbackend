@@ -1,5 +1,5 @@
 
-from datetime import datetime
+from datetime import datetime, date
 from pydantic import BaseModel
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,6 +10,7 @@ from routers.loan_application import get_current_user
 from schemas import loanapplication as loan_app_schemas
 from utils import loan_application as loan_app_utils
 from utils import auth as auth_utils
+from utils import statistics as stats_utils
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 
@@ -269,6 +270,7 @@ class PaymentRecord(BaseModel):
     payment_method: str  # cash, bank_transfer, mobile_money
     reference_number: Optional[str] = None
     notes: Optional[str] = None
+    payment_date: Optional[datetime] = None
 
 @adminrouter.post("/loan-agreement/{loan_agreement_id}/record-payment")
 def record_payment(
@@ -300,7 +302,8 @@ def record_payment(
         payment_data.amount_paid,
         payment_data.payment_method,
         payment_data.reference_number,
-        payment_data.notes
+        payment_data.notes,
+        payment_data.payment_date
     )
     
     if not payment:
@@ -312,6 +315,7 @@ def record_payment(
         "amount_paid": payment.amount_paid,
         "principal_paid": payment.principal_paid,
         "interest_paid": payment.interest_paid,
+        "penalty_paid": payment.penalty_paid,
         "installments_covered": payment.installments_covered
     }
 
@@ -326,7 +330,12 @@ def recalculate_all_late_fees(
     if not current_staff.can_approve_loans:
         raise HTTPException(status_code=403, detail="Permission denied")
     
+    from database import models as db_models
+    from utils.loan_application import create_audit_log
     updated_count = loan_app_utils.update_daily_late_fees(db)
+    create_audit_log(db, "recalculate_late_fees", current_staff.employee_id, "loan_agreement", 0,
+                     f"Manual late fee recalculation by {current_staff.employee_name}. Updated: {updated_count} installments")
+    db.commit()
     
     return {"message": f"Late fees recalculated successfully", "updated_installments": updated_count}
 
@@ -481,3 +490,130 @@ def update_application_admin(
     db.commit()
     db.refresh(application)
     return {"message": "Application updated successfully by admin", "application_id": application.application_id}
+
+
+# GET ALL LOANS ELIGIBLE FOR PAYMENT RECORDING
+@adminrouter.get("/admin/loans-for-payment")
+def get_loans_for_payment(
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get all loan agreements eligible for payment (status: disbursed or active) with computed balances"""
+    if not current_staff.can_record_payments:
+        raise HTTPException(status_code=403, detail="You don't have permission to record payments")
+    return loan_app_utils.get_loans_for_payment(db)
+
+
+# ===== STATISTICS & REPORTS ENDPOINTS =====
+
+@adminrouter.get("/admin/statistics/summary")
+def get_statistics_summary(
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get overall dashboard summary statistics"""
+    return stats_utils.get_dashboard_summary(db)
+
+
+@adminrouter.get("/admin/statistics/status-distribution")
+def get_status_distribution(
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get loan status distribution for charts"""
+    return stats_utils.get_status_distribution(db)
+
+
+@adminrouter.get("/admin/statistics/monthly-applications")
+def get_monthly_applications(
+    months: int = 12,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get monthly loan application counts"""
+    return stats_utils.get_monthly_applications(db, months)
+
+
+@adminrouter.get("/admin/statistics/monthly-disbursements")
+def get_monthly_disbursements(
+    months: int = 12,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get monthly disbursed amounts"""
+    return stats_utils.get_monthly_disbursements(db, months)
+
+
+@adminrouter.get("/admin/statistics/monthly-repayments")
+def get_monthly_repayments(
+    months: int = 12,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get monthly repayment amounts"""
+    return stats_utils.get_monthly_repayments(db, months)
+
+
+@adminrouter.get("/admin/statistics/portfolio")
+def get_portfolio_summary(
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get portfolio performance metrics"""
+    return stats_utils.get_portfolio_summary(db)
+
+
+@adminrouter.get("/admin/statistics/top-borrowers")
+def get_top_borrowers(
+    limit: int = 10,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get top borrowers by repayment amount"""
+    return stats_utils.get_top_borrowers(db, limit)
+
+
+@adminrouter.get("/admin/statistics/audit-logs")
+def get_audit_logs(
+    action: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    skip: int = 0,
+    limit: int = 100,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get audit logs with optional filters"""
+    if start_date is None:
+        start_date = None
+    if end_date is None:
+        end_date = None
+    return stats_utils.get_audit_logs_report(db, action, start_date, end_date, skip, limit)
+
+
+@adminrouter.get("/admin/reports/payments")
+def get_payments_report(
+    status: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    skip: int = 0,
+    limit: int = 100,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get payments report with optional filters"""
+    return stats_utils.get_loan_payments_report(db, status, start_date, end_date, skip, limit)
+
+
+@adminrouter.get("/admin/reports/loans")
+def get_loans_report(
+    status: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    skip: int = 0,
+    limit: int = 100,
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get loans report with optional filters"""
+    return stats_utils.get_loans_report(db, status, start_date, end_date, skip, limit)

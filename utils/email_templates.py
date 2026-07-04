@@ -49,23 +49,62 @@ def get_loan_disbursed_email(user_name, first_payment_date, monthly_payment):
     """
     return subject, html
 
-def get_payment_receipt_email(user_name, amount_paid, installment_numbers, remaining_balance):
+def get_payment_receipt_email(user_name, amount_paid, installment_numbers, remaining_balance,
+                               payment_method=None, principal_paid=None, interest_paid=None,
+                               penalty_paid=None, next_due_date=None, agreement_id=None):
     """Email when payment is recorded"""
     subject = f"Payment Receipt - {amount_paid:,.0f} RWF"
     
+    penalty_html = f"<li>Late Fee Paid: {penalty_paid:,.0f} RWF</li>" if penalty_paid and penalty_paid > 0 else ""
+    next_due_html = f"<li>Next Payment Due: {next_due_date}</li>" if next_due_date else ""
+    dashboard_link = f'<p><a href="http://localhost:3000/dashboard/user/repayments/{agreement_id}">View your repayment schedule</a></p>' if agreement_id else ""
+    
     html = f"""
+    <!DOCTYPE html>
     <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; line-height: 1.6; }}
+            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+            .header {{ background-color: #28a745; color: white; padding: 15px; text-align: center; }}
+            .content {{ padding: 20px; background-color: #f9f9f9; }}
+            .amount {{ font-size: 28px; font-weight: bold; color: #28a745; text-align: center; padding: 15px; }}
+            .details {{ margin: 15px 0; padding: 15px; background-color: white; border: 1px solid #ddd; border-radius: 5px; }}
+            .footer {{ text-align: center; padding: 10px; font-size: 12px; color: #666; }}
+        </style>
+    </head>
     <body>
-        <h2>Payment Received</h2>
-        <p>Dear {user_name},</p>
-        <p>We have recorded your payment of <strong>{amount_paid:,.0f} RWF</strong>.</p>
-        
-        <ul>
-            <li>Installments Covered: {installment_numbers}</li>
-            <li>Remaining Balance: {remaining_balance:,.0f} RWF</li>
-        </ul>
-        
-        <p>Thank you for your timely payment.</p>
+        <div class="container">
+            <div class="header">
+                <h2>Payment Received</h2>
+            </div>
+            <div class="content">
+                <p>Dear {user_name},</p>
+                <p>We have recorded your payment of:</p>
+                <div class="amount">{amount_paid:,.0f} RWF</div>
+
+                <div class="details">
+                    <h3>Payment Details:</h3>
+                    <ul>
+                        <li>Installments Covered: {installment_numbers}</li>
+                        <li>Principal Paid: {principal_paid:,.0f} RWF</li>
+                        <li>Interest Paid: {interest_paid:,.0f} RWF</li>
+                        {penalty_html}
+                        <li>Remaining Balance: {remaining_balance:,.0f} RWF</li>
+                        {next_due_html}
+                    </ul>
+                    <p><strong>Method:</strong> {payment_method or "N/A"}</p>
+                </div>
+
+                {dashboard_link}
+
+                <p>Thank you for your payment.</p>
+            </div>
+            <div class="footer">
+                <p>&copy; 2024 Loan Management System. All rights reserved.</p>
+                <p>This is an automated message, please do not reply.</p>
+            </div>
+        </div>
     </body>
     </html>
     """

@@ -19,30 +19,34 @@ def generate_otp():
 
 
 
-def create_user_with_otp(db: Session, user_data: user_schemas.UserCreate)-> models.User:
+def create_user_with_otp(db: Session, user_data: user_schemas.UserCreate):
     """Create user and send OTP for verification"""
     # Check if user exists
     existing_user = get_user_by_email(db, user_data.email)
     if existing_user and existing_user.is_email_verified:
         return None, "Email already registered"
     
-   
-     # If user exists but not verified, update OTP
-    if existing_user and not existing_user.is_email_verified:
-        existing_user.otp_code = otp
-        existing_user.otp_expiry = otp_expiry
-        # Don't update other fields
-        db.commit()
-        user = existing_user
-    else:
-        # Create user but mark as not verified
-        hashed_password = auth_utils.get_password_hash(user_data.password)
-    
     # Generate OTP
     otp = generate_otp()
     otp_expiry = datetime.now() + timedelta(minutes=int(os.getenv("OTP_EXPIRY_MINUTES", 10)))
     
-    # Create user
+    # If user exists but not verified, update OTP
+    if existing_user and not existing_user.is_email_verified:
+        existing_user.otp_code = otp
+        existing_user.otp_expiry = otp_expiry
+        db.commit()
+        db.refresh(existing_user)
+        
+        # Send OTP email
+        success, message = send_otp_email(user_data.email, otp, existing_user.name)
+        if not success:
+            print(f"Failed to send OTP: {message}")
+        
+        return existing_user, "User created. Please verify your email with the OTP sent."
+    
+    # Create user but mark as not verified
+    hashed_password = auth_utils.get_password_hash(user_data.password)
+    
     db_user = models.User(
         name=user_data.name,
         email=user_data.email,
@@ -62,7 +66,6 @@ def create_user_with_otp(db: Session, user_data: user_schemas.UserCreate)-> mode
     success, message = send_otp_email(user_data.email, otp, user_data.name)
     
     if not success:
-        # Log error but don't fail user creation
         print(f"Failed to send OTP: {message}")
     
     return db_user, "User created. Please verify your email with the OTP sent."
@@ -80,7 +83,7 @@ def verify_otp(db: Session, email: str, otp_code: str):
     if user.otp_code != otp_code:
         return False, "Invalid OTP code"
     
-    if user.otp_expiry < datetime.now(timezone.utc):
+    if user.otp_expiry < datetime.now():
         return False, "OTP has expired"
     
     # Mark as verified - account becomes active
@@ -102,7 +105,7 @@ def resend_otp(db: Session, email: str):
     
     # Generate new OTP
     otp = generate_otp()
-    otp_expiry = datetime.now() + datetime.timedelta(minutes=int(os.getenv("OTP_EXPIRY_MINUTES", 10)))
+    otp_expiry = datetime.now() + timedelta(minutes=int(os.getenv("OTP_EXPIRY_MINUTES", 10)))
     
     user.otp_code = otp
     user.otp_expiry = otp_expiry
@@ -158,7 +161,7 @@ def reset_password(db: Session, token: str, new_password: str):
     if user.reset_token != token:
         return False, "Invalid token"
     
-    if user.reset_token_expiry < datetime.now(timezone.utc):
+    if user.reset_token_expiry < datetime.now():
         return False, "Token has expired"
     
     # Update password
