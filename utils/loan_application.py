@@ -1,9 +1,10 @@
+import re
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_
 from database import models
 from schemas import loanapplication as loan_app_schemas
-from datetime import datetime, timedelta, date
-from utils.email_templates import get_loan_approved_email, get_loan_disbursed_email, get_payment_receipt_email
+from datetime import datetime, timedelta, date, timezone
+from utils.email_templates import get_loan_approved_email, get_loan_disbursed_email, get_payment_receipt_email, get_loan_rejected_email
 from utils.email import send_email
 import logging
 import os
@@ -114,9 +115,21 @@ def create_draft_application(db: Session, user_id: int):
     return draft, "New draft created"
 
 
+# Conditional field groups that must be cleared when toggles change
+_TOGGLE_DEPENDENCIES = {
+    'has_guarantor': ['guarantor_name', 'guarantor_relationship', 'guarantor_phone',
+                      'guarantor_address', 'guarantor_occupation', 'guarantor_id_number'],
+    'has_collateral': ['collateral_description'],
+    'has_existing_loans': ['existing_loan_details'],
+}
+
+
 # Function to update the draft application anytime before submitting
 def update_application_partial(db: Session, application_id: int, user_id: int, update_data: dict):
-    """Update only the fields provided in update_data"""
+    """Update only the fields provided in update_data.
+    When a toggle field (has_guarantor, etc.) is set to a clearing value,
+    its dependent fields are automatically nulled.
+    """
     application = db.query(models.LoanApplication).filter(
         models.LoanApplication.application_id == application_id,
         models.LoanApplication.user_id == user_id
@@ -132,6 +145,45 @@ def update_application_partial(db: Session, application_id: int, user_id: int, u
     for key, value in update_data.items():
         if hasattr(application, key) and value is not None:
             setattr(application, key, value)
+    
+    # When employment_status changes, clear the opposite group
+    if 'employment_status' in update_data:
+        new_status = update_data['employment_status']
+        if new_status == 'employed':
+            for field in ['business_name', 'business_type', 'business_location',
+                          'monthly_business_income', 'years_in_business']:
+                setattr(application, field, None)
+        elif new_status == 'self_employed':
+            for field in ['employer_name', 'job_title', 'monthly_salary',
+                          'length_of_employment_years']:
+                setattr(application, field, None)
+        elif new_status == 'unemployed':
+            for field in ['employer_name', 'job_title', 'monthly_salary',
+                          'length_of_employment_years', 'business_name', 'business_type',
+                          'business_location', 'monthly_business_income', 'years_in_business']:
+                setattr(application, field, None)
+    
+    # When has_guarantor is set to False/None, clear all guarantor fields
+    guarantor_val = update_data.get('has_guarantor',
+                                     getattr(application, 'has_guarantor', None))
+    if guarantor_val is False or guarantor_val is None:
+        for field in _TOGGLE_DEPENDENCIES['has_guarantor']:
+            if field not in update_data:
+                setattr(application, field, None)
+    
+    # When has_collateral is set to False/None, clear collateral_description
+    collateral_val = update_data.get('has_collateral',
+                                      getattr(application, 'has_collateral', None))
+    if collateral_val is False or collateral_val is None:
+        if 'collateral_description' not in update_data:
+            setattr(application, 'collateral_description', None)
+    
+    # When has_existing_loans is set to False/None, clear existing_loan_details
+    existing_val = update_data.get('has_existing_loans',
+                                    getattr(application, 'has_existing_loans', None))
+    if existing_val is False or existing_val is None:
+        if 'existing_loan_details' not in update_data:
+            setattr(application, 'existing_loan_details', None)
     
     db.commit()
     db.refresh(application)
@@ -149,6 +201,139 @@ def get_user_draft(db: Session, user_id: int):
     
     return draft
 
+PHONE_REGEX = re.compile(r'^\+?[\d\s\-()]{7,20}$')
+
+
+MIN_AGE_YEARS = 18
+MAX_DURATION_MONTHS = 60
+
+VALID_EMPLOYMENT_STATUSES = {'employed', 'self_employed', 'unemployed'}
+VALID_GENDERS = {'male', 'female'}
+VALID_MARITAL_STATUSES = {'single', 'married', 'divorced', 'widowed'}
+VALID_REPAYMENT_METHODS = {'bank_transfer', 'mobile_money', 'cash'}
+
+
+def _validate_phone_value(value, field_name: str) -> list[str]:
+    errors = []
+    if value is not None and str(value).strip():
+        digits = re.sub(r'\D', '', str(value))
+        if len(digits) < 10:
+            errors.append(f"{field_name} must contain at least 10 digits")
+        if len(digits) > 15:
+            errors.append(f"{field_name} must not exceed 15 digits")
+    return errors
+
+
+def _validate_application_data(application) -> list[str]:
+    errors = []
+
+    # Phone validation
+    errors.extend(_validate_phone_value(application.phone_number, "Phone number"))
+    errors.extend(_validate_phone_value(application.guarantor_phone, "Guarantor phone"))
+
+    # Numeric value validation
+    numeric_checks = {
+        "monthly_salary": ("Monthly salary", 0, None),
+        "monthly_business_income": ("Monthly business income", 0, None),
+        "monthly_income": ("Monthly income", 0, None),
+        "monthly_expenses": ("Monthly expenses", 0, None),
+        "savings_balance": ("Savings balance", 0, None),
+        "other_income_amount": ("Other income amount", 0, None),
+        "number_of_dependents": ("Number of dependents", 0, None),
+        "length_of_employment_years": ("Length of employment", 0, None),
+        "years_in_business": ("Years in business", 0, None),
+        "amount_requested": ("Amount requested", None, 0),
+        "duration_requested": ("Duration requested", None, 0),
+    }
+
+    for field, (label, ge, gt) in numeric_checks.items():
+        val = getattr(application, field, None)
+        if val is not None:
+            if ge is not None and val < ge:
+                errors.append(f"{label} cannot be negative")
+            if gt is not None and val <= gt:
+                errors.append(f"{label} must be greater than zero")
+
+    # Date of birth: not future + minimum age
+    dob = application.date_of_birth
+    if dob is not None:
+        if isinstance(dob, date):
+            if dob > date.today():
+                errors.append("Date of birth cannot be in the future")
+            age = (date.today().year - dob.year -
+                   ((date.today().month, date.today().day) < (dob.month, dob.day)))
+            if age < MIN_AGE_YEARS:
+                errors.append(f"You must be at least {MIN_AGE_YEARS} years old")
+
+    # Duration must be within allowed range
+    if application.duration_requested is not None:
+        if application.duration_requested > MAX_DURATION_MONTHS:
+            errors.append(f"Duration requested must not exceed {MAX_DURATION_MONTHS} months")
+
+    # Amount requested must be positive
+    if application.amount_requested is not None and application.amount_requested <= 0:
+        errors.append("Loan amount must be greater than zero")
+
+    # Enum validation
+    if application.employment_status and application.employment_status not in VALID_EMPLOYMENT_STATUSES:
+        errors.append(f"Invalid employment status: {application.employment_status}")
+    if application.gender and application.gender not in VALID_GENDERS:
+        errors.append(f"Invalid gender: {application.gender}")
+    if application.marital_status and application.marital_status not in VALID_MARITAL_STATUSES:
+        errors.append(f"Invalid marital status: {application.marital_status}")
+    if (application.preferred_repayment_method and
+            application.preferred_repayment_method not in VALID_REPAYMENT_METHODS):
+        errors.append(f"Invalid repayment method: {application.preferred_repayment_method}")
+
+    # Collateral requirement
+    if application.has_collateral and not application.collateral_description:
+        errors.append("Collateral description is required when has_collateral is true")
+
+    # Guarantor requirement
+    if application.has_guarantor:
+        if not application.guarantor_name:
+            errors.append("Guarantor name is required when has_guarantor is true")
+        if not application.guarantor_phone:
+            errors.append("Guarantor phone is required when has_guarantor is true")
+
+    # Existing loans
+    if application.has_existing_loans and not application.existing_loan_details:
+        errors.append("Existing loan details are required when has_existing_loans is true")
+
+    # Employment conditional requirements
+    if application.employment_status == "employed":
+        if not application.employer_name:
+            errors.append("Employer name is required when employment status is employed")
+        if application.monthly_salary is None:
+            errors.append("Monthly salary is required when employment status is employed")
+    elif application.employment_status == "self_employed":
+        if not application.business_name:
+            errors.append("Business name is required when employment status is self-employed")
+        if application.monthly_business_income is None:
+            errors.append("Monthly business income is required when employment status is self-employed")
+
+    # Net income sanity check
+    monthly_income = getattr(application, 'monthly_income', None)
+    monthly_expenses = getattr(application, 'monthly_expenses', None)
+    if monthly_income is not None and monthly_expenses is not None:
+        if monthly_expenses > monthly_income:
+            errors.append("Monthly expenses should not exceed monthly income")
+
+    # Document requirements
+    if not application.national_id_document_path:
+        errors.append("National ID document is required")
+    if not application.proof_of_address_path:
+        errors.append("Proof of address is required")
+    if application.employment_status == "employed" and not application.salary_slip_path:
+        errors.append("Salary slip is required when employment status is employed")
+    if application.employment_status == "self_employed" and not application.business_license_path:
+        errors.append("Business license is required when employment status is self-employed")
+    if application.has_collateral and not application.collateral_document_path:
+        errors.append("Collateral document is required when has_collateral is true")
+
+    return errors
+
+
 # Submit application at the end
 def submit_application(db: Session, application_id: int, user_id: int):
     """Submit a draft application for review"""
@@ -163,25 +348,14 @@ def submit_application(db: Session, application_id: int, user_id: int):
     if application.status != "draft":
         return None, f"Cannot submit application with status: {application.status}"
     
-    # Define required fields for submission (adjust as needed)
-    required_fields = [
-        "amount_requested", "loan_purpose", "duration_requested",
-        "employment_status", "monthly_income",
-        "residential_address", "city", "national_id"
-    ]
-    
-    # Check which required fields are missing
-    missing_fields = []
-    for field in required_fields:
-        if getattr(application, field) is None:
-            missing_fields.append(field)
-    
-    if missing_fields:
-        return None, f"Missing required fields: {', '.join(missing_fields)}"
+    # Validate all application data before submission
+    validation_errors = _validate_application_data(application)
+    if validation_errors:
+        return None, "Validation failed: " + "; ".join(validation_errors)
     
     # Update application status
     application.status = "pending"
-    application.submitted_at = datetime.now()
+    application.submitted_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(application)
     
@@ -293,7 +467,19 @@ def reject_application(
                      f"Application rejected. Reason: {rejection_reason}")
     db.commit()
     db.refresh(application)
-    
+
+    try:
+        user = db.query(models.User).filter(models.User.user_id == application.user_id).first()
+        if user:
+            subject, html = get_loan_rejected_email(
+                user.name,
+                rejection_reason,
+                review_notes,
+            )
+            send_email(user.email, subject, html)
+    except Exception:
+        logger.exception("Failed to send rejection email for application_id=%s", application_id)
+
     return application
 
 def mark_under_review(
@@ -521,6 +707,7 @@ def mark_disbursed(db: Session, loan_agreement_id: int, staff_id: str,
                 user.name,
                 agreement.first_payment_date,
                 agreement.monthly_payment,
+                agreement.agreement_id,
             )
             send_email(user.email, subject, html)
     except Exception:

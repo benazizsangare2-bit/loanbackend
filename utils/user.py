@@ -28,7 +28,7 @@ def create_user_with_otp(db: Session, user_data: user_schemas.UserCreate):
     
     # Generate OTP
     otp = generate_otp()
-    otp_expiry = datetime.now() + timedelta(minutes=int(os.getenv("OTP_EXPIRY_MINUTES", 10)))
+    otp_expiry = datetime.now(timezone.utc) + timedelta(minutes=int(os.getenv("OTP_EXPIRY_MINUTES", 10)))
     
     # If user exists but not verified, update OTP
     if existing_user and not existing_user.is_email_verified:
@@ -83,7 +83,7 @@ def verify_otp(db: Session, email: str, otp_code: str):
     if user.otp_code != otp_code:
         return False, "Invalid OTP code"
     
-    if user.otp_expiry < datetime.now():
+    if user.otp_expiry < datetime.now(timezone.utc):
         return False, "OTP has expired"
     
     # Mark as verified - account becomes active
@@ -105,7 +105,7 @@ def resend_otp(db: Session, email: str):
     
     # Generate new OTP
     otp = generate_otp()
-    otp_expiry = datetime.now() + timedelta(minutes=int(os.getenv("OTP_EXPIRY_MINUTES", 10)))
+    otp_expiry = datetime.now(timezone.utc) + timedelta(minutes=int(os.getenv("OTP_EXPIRY_MINUTES", 10)))
     
     user.otp_code = otp
     user.otp_expiry = otp_expiry
@@ -127,7 +127,7 @@ def create_password_reset_token(db: Session, email: str):
     
     # Generate reset token
     reset_token = auth_utils.create_access_token(data={"sub": email, "type": "password_reset"})
-    reset_expiry = datetime.now() + timedelta(hours=1)
+    reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
     
     user.reset_token = reset_token
     user.reset_token_expiry = reset_expiry
@@ -161,7 +161,7 @@ def reset_password(db: Session, token: str, new_password: str):
     if user.reset_token != token:
         return False, "Invalid token"
     
-    if user.reset_token_expiry < datetime.now():
+    if user.reset_token_expiry < datetime.now(timezone.utc):
         return False, "Token has expired"
     
     # Update password

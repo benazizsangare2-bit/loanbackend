@@ -43,10 +43,15 @@ def get_dashboard_summary(db: Session):
         func.coalesce(func.sum(models.LoanAgreement.approved_amount), 0)
     ).filter(models.LoanAgreement.status == "defaulted").scalar()
 
+    total_rejected = db.query(models.LoanApplication).filter(
+        models.LoanApplication.status == "rejected"
+    ).count()
+
     total_outstanding = round(float(total_disbursed_result) - float(total_repaid_result), 2)
 
     return {
         "total_applications": total_applications,
+        "total_rejected": total_rejected,
         "total_approved": status_map.get("approved", 0),
         "total_disbursed": status_map.get("disbursed", 0),
         "total_active": status_map.get("active", 0),
@@ -291,6 +296,53 @@ def get_loans_report(db: Session, status: str = None,
         })
 
     return {"total": total, "loans": result}
+
+
+def get_rejection_analysis(db: Session):
+    """Get rejection statistics and breakdown by reason"""
+    total_rejected = db.query(models.LoanApplication).filter(
+        models.LoanApplication.status == "rejected"
+    ).count()
+
+    recent_rejections = db.query(models.LoanApplication).filter(
+        models.LoanApplication.status == "rejected"
+    ).order_by(models.LoanApplication.reviewed_at.desc()).limit(5).all()
+
+    reasons_query = db.query(
+        models.LoanApplication.rejection_reason,
+        func.count(models.LoanApplication.application_id)
+    ).filter(
+        models.LoanApplication.status == "rejected",
+        models.LoanApplication.rejection_reason.isnot(None)
+    ).group_by(models.LoanApplication.rejection_reason).order_by(
+        func.count(models.LoanApplication.application_id).desc()
+    ).all()
+
+    total_rejected_amount = db.query(
+        func.coalesce(func.sum(models.LoanApplication.amount_requested), 0)
+    ).filter(models.LoanApplication.status == "rejected").scalar()
+
+    return {
+        "total_rejected": total_rejected,
+        "total_rejected_amount": round(float(total_rejected_amount), 2),
+        "reasons_distribution": [
+            {"reason": reason, "count": count}
+            for reason, count in reasons_query
+        ],
+        "recent_rejections": [
+            {
+                "application_id": app.application_id,
+                "user_id": app.user_id,
+                "full_name": app.full_name,
+                "amount_requested": app.amount_requested,
+                "rejection_reason": app.rejection_reason,
+                "review_notes": app.review_notes,
+                "reviewed_by": app.reviewed_by,
+                "reviewed_at": app.reviewed_at.isoformat() if app.reviewed_at else None,
+            }
+            for app in recent_rejections
+        ],
+    }
 
 
 def get_audit_logs_report(db: Session, action: str = None,

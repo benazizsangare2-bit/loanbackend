@@ -25,7 +25,7 @@ def get_loan_approved_email(user_name, loan_amount, monthly_payment, interest_ra
     """
     return subject, html
 
-def get_loan_disbursed_email(user_name, first_payment_date, monthly_payment):
+def get_loan_disbursed_email(user_name, first_payment_date, monthly_payment, agreement_id):
     """Email when loan is disbursed"""
     subject = "Your Loan Has Been Disbursed"
     
@@ -43,7 +43,7 @@ def get_loan_disbursed_email(user_name, first_payment_date, monthly_payment):
         
         <p>Please ensure timely payment to avoid late fees.</p>
         
-        <p><a href="http://localhost:3000/repayment-schedule">View your repayment schedule</a></p>
+        <p><a href="http://localhost:3000/dashboard/user/loans/{agreement_id}">View your repayment schedule</a></p>
     </body>
     </html>
     """
@@ -57,7 +57,7 @@ def get_payment_receipt_email(user_name, amount_paid, installment_numbers, remai
     
     penalty_html = f"<li>Late Fee Paid: {penalty_paid:,.0f} RWF</li>" if penalty_paid and penalty_paid > 0 else ""
     next_due_html = f"<li>Next Payment Due: {next_due_date}</li>" if next_due_date else ""
-    dashboard_link = f'<p><a href="http://localhost:3000/dashboard/user/repayments/{agreement_id}">View your repayment schedule</a></p>' if agreement_id else ""
+    dashboard_link = f'<p><a href="http://localhost:3000/dashboard/user/loans/{agreement_id}">View your repayment schedule</a></p>' if agreement_id else ""
     
     html = f"""
     <!DOCTYPE html>
@@ -143,7 +143,7 @@ def get_signature_confirmation_email(user_name: str, agreement_id: int, signed_n
                     <p><strong>Signature Type:</strong> Electronic (Typed Name)</p>
                 </div>
                 <p>Your loan will be disbursed within 1-2 business days.</p>
-                <p><a href="http://localhost:3000/admin/loans/{agreement_id}">View your signed agreement</a></p>
+                <p><a href="http://localhost:3000/admin/dashboard/loans/{agreement_id}">View your signed agreement</a></p>
             </div>
             <div class="footer">
                 <p>&copy; 2024 Loan Management System. All rights reserved.</p>
@@ -153,6 +153,30 @@ def get_signature_confirmation_email(user_name: str, agreement_id: int, signed_n
     </html>
     """
     
+    return subject, html
+
+
+def get_loan_rejected_email(user_name, rejection_reason, review_notes=None):
+    """Email when loan is rejected"""
+    subject = "Your Loan Application Has Been Reviewed"
+
+    notes_html = f"<p><strong>Review Notes:</strong> {review_notes}</p>" if review_notes else ""
+
+    html = f"""
+    <html>
+    <body>
+        <h2>Dear {user_name},</h2>
+        <p>We have reviewed your loan application and regret to inform you that it has been <strong>rejected</strong>.</p>
+
+        <h3>Reason for Rejection:</h3>
+        <p>{rejection_reason}</p>
+        {notes_html}
+
+        <p>If you have any questions or would like more information, please contact our support team.</p>
+        <p><a href="http://localhost:3000/dashboard/user/applications">View your application status</a></p>
+    </body>
+    </html>
+    """
     return subject, html
 
 
@@ -183,7 +207,7 @@ def get_admin_signature_notification_email(user_name: str, agreement_id: int, si
                     <li><strong>Agreement ID:</strong> {agreement_id}</li>
                     <li><strong>Signed by:</strong> {signed_name}</li>
                 </ul>
-                <p><a href="https://localhost:3000/admin/loans/{agreement_id}">View agreement in admin panel</a></p>
+                <p><a href="http://localhost:3000/admin/dashboard/loans/{agreement_id}">View agreement in admin panel</a></p>
             </div>
         </div>
     </html>

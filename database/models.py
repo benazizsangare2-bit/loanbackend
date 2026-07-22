@@ -3,7 +3,7 @@ This file defines your database tables (like schema.go in Go).
 Each class here represents a table in PostgreSQL.
 """
 
-from sqlalchemy import Column, Date, Integer, String, Boolean, DateTime, Float, Text, Index
+from sqlalchemy import Column, Date, Integer, String, Boolean, DateTime, Float, Text, Index, CheckConstraint
 from sqlalchemy.schema import ForeignKey
 from sqlalchemy.sql import func
 from database.connection import Base
@@ -84,6 +84,20 @@ class Staff(Base):
 class LoanApplication(Base):
     """Loan Applications table - complete application with document paths"""
     __tablename__ = "loan_applications"
+    __table_args__ = (
+        CheckConstraint('monthly_salary >= 0 OR monthly_salary IS NULL', name='ck_monthly_salary_non_negative'),
+        CheckConstraint('monthly_business_income >= 0 OR monthly_business_income IS NULL', name='ck_monthly_business_income_non_negative'),
+        CheckConstraint('length_of_employment_years >= 0 OR length_of_employment_years IS NULL', name='ck_length_of_employment_non_negative'),
+        CheckConstraint('years_in_business >= 0 OR years_in_business IS NULL', name='ck_years_in_business_non_negative'),
+        CheckConstraint('monthly_income >= 0 OR monthly_income IS NULL', name='ck_monthly_income_non_negative'),
+        CheckConstraint('monthly_expenses >= 0 OR monthly_expenses IS NULL', name='ck_monthly_expenses_non_negative'),
+        CheckConstraint('savings_balance >= 0 OR savings_balance IS NULL', name='ck_savings_balance_non_negative'),
+        CheckConstraint('other_income_amount >= 0 OR other_income_amount IS NULL', name='ck_other_income_non_negative'),
+        CheckConstraint('number_of_dependents >= 0 OR number_of_dependents IS NULL', name='ck_dependents_non_negative'),
+        CheckConstraint('amount_requested > 0 OR amount_requested IS NULL', name='ck_amount_positive'),
+        CheckConstraint('duration_requested > 0 OR duration_requested IS NULL', name='ck_duration_positive'),
+        CheckConstraint('duration_requested <= 60 OR duration_requested IS NULL', name='ck_duration_max_60'),
+    )
     
     # Primary key
     application_id = Column(Integer, primary_key=True, index=True)

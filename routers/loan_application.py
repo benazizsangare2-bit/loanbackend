@@ -97,25 +97,6 @@ def submit_application(
     return {"message": message, "application_id": application.application_id, "status": application.status}
 
 
-# GET A SPECIFIC APPLICATIONS BY ID
-@loanrouter.get("/application/{application_id}")
-def get_application_by_id(
-    application_id: int,
-    current_user = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get a specific application by ID (for viewing submitted applications)"""
-    application = loan_app_utils.get_application_by_id(db, application_id)
-    
-    if not application:
-        raise HTTPException(status_code=404, detail="Application not found")
-    
-    # Users can only view their own applications
-    if application.user_id != current_user.user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    return application
-
 # GET ALL LOAN APPLICATION FOR A SPECIFIC CLIENT
 @loanrouter.get("/my-applications", response_model=list[loan_app_schemas.LoanApplicationResponse])
 def get_my_applications(

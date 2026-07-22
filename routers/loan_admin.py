@@ -1,6 +1,6 @@
 
 from datetime import datetime, date
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -105,10 +105,10 @@ def mark_as_under_review(
 
 # MARK AN APPLICATION AS APPROVED
 class ApproveRequest(BaseModel):
-    approved_amount: Optional[float] = None
-    interest_rate: Optional[float] = None
-    duration_months: Optional[int] = None
-    approval_notes: Optional[str] = None
+    approved_amount: Optional[float] = Field(None, gt=0)
+    interest_rate: Optional[float] = Field(None, ge=0, le=100)
+    duration_months: Optional[int] = Field(None, gt=0, le=60)
+    approval_notes: Optional[str] = Field(None, max_length=500)
 
 @adminrouter.put("/{application_id}/approve")
 def approve_application(
@@ -134,11 +134,14 @@ def approve_application(
 
 
 # MARK AN APPLICATION AS REJECTED
+class RejectRequest(BaseModel):
+    rejection_reason: str
+    review_notes: Optional[str] = None
+
 @adminrouter.put("/{application_id}/reject")
 def reject_application(
     application_id: int,
-    rejection_reason: str,
-    review_notes: Optional[str] = None,
+    params: RejectRequest,
     current_staff = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
@@ -149,7 +152,7 @@ def reject_application(
     
     try:
         application = loan_app_utils.reject_application(
-            db, application_id, current_staff.employee_id, rejection_reason, review_notes
+            db, application_id, current_staff.employee_id, params.rejection_reason, params.review_notes
         )
         if not application:
             raise HTTPException(status_code=404, detail="Application not found")
@@ -291,10 +294,10 @@ def get_admin_payment_history(
 # PAYMENT ENDPOINT TO RECORD A PAYMENT MADE BY  
 class PaymentRecord(BaseModel):
     """Schema for recording a payment"""
-    amount_paid: float
-    payment_method: str  # cash, bank_transfer, mobile_money
-    reference_number: Optional[str] = None
-    notes: Optional[str] = None
+    amount_paid: float = Field(..., gt=0)
+    payment_method: str = Field(..., min_length=1, max_length=50)  # cash, bank_transfer, mobile_money
+    reference_number: Optional[str] = Field(None, max_length=100)
+    notes: Optional[str] = Field(None, max_length=500)
     payment_date: Optional[datetime] = None
 
 @adminrouter.post("/loan-agreement/{loan_agreement_id}/record-payment")
@@ -596,6 +599,15 @@ def get_top_borrowers(
 ):
     """Get top borrowers by repayment amount"""
     return stats_utils.get_top_borrowers(db, limit)
+
+
+@adminrouter.get("/admin/statistics/rejection-analysis")
+def get_rejection_analysis(
+    current_staff = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get rejection statistics and breakdown by reason"""
+    return stats_utils.get_rejection_analysis(db)
 
 
 @adminrouter.get("/admin/statistics/audit-logs")

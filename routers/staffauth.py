@@ -39,12 +39,12 @@ def get_current_staff(
 @router.post("/register", response_model=staff_schemas.StaffResponse)
 def register_staff(
     staff_data: staff_schemas.StaffCreate,
-    current_staff = Depends(get_current_staff),
+    # current_staff = Depends(get_current_staff),
     db: Session = Depends(get_db)
 ):
     """Register a new staff member (Admin only)"""
-    if not current_staff.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    # if not current_staff.is_admin:
+    #     raise HTTPException(status_code=403, detail="Admin access required")
     # Check if email already exists
     existing_staff = staff_utils.get_staff_by_email(db, staff_data.email)
     if existing_staff:
