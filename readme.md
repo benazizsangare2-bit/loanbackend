@@ -293,10 +293,3 @@ Interest Fee for borrowing money Decreases each month
 Principal Pays down what you owe Increases each month
 
 
-///////////////////
-I need you to make some modifications about the admin panel of this project. You can use the lib/api/openapi.json and types.ts or even go to the file loanmanagement which is the backend. 
-1. first you need to change the overall design of the admin panel. The colors are not good, they are not well designed and difficult to read the data. Improve the colors you can match them with the client part. Even the cards in the different tabs do not use good color adjustment. Change them all
-2. The register staff tab allows to register a new admin. Right now clicking the tab makes a form pop up. Change it to make a page that shows the form (not using a card) and allowing to register an admin. 
-3. Then in the first tab which is "pending reviews", we can se a list of all pending loan applications which is correct. But it needs refinement: When you inspect a loan, it pops up a side card with few info. So I need you to remove this side card and make the inspect button lead to a new page that will show the full application detail (the same way the client views their full applications), with the following option at the end of the pages: mark as under review, Approve, reject, update this application (so the admin can modify it anytime they want). When pressing the apporved button, it should pop up a card to add the aditional information before updating, same for rejecting. When you press the mark as under review button, the application should still be displayed under the same tab.
-4. the first tab should always display all the loans which are there in the database and the option to inspect them with the same options. What changes is the status on each applications. 
-5. Add a tab loan agreements. this tab will display all the loan agreement signatures that are available. Display them in read only format so that we can see the loan agreements and their statuses.

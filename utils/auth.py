@@ -47,19 +47,21 @@ def get_password_hash(password: str) -> str:
     """
     return pwd_context.hash(password)
 
-def create_access_token(data: dict) -> str:
+def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     """
     Create a JWT access token.
     Similar to JWT signing in Go.
-    
+
     Args:
         data: Dictionary containing claims (like user email)
-    
+        expires_delta: Optional custom lifetime for this token. Defaults to
+            ACCESS_TOKEN_EXPIRE_MINUTES when not provided (login sessions).
+
     Returns:
         Encoded JWT token string
     """
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt

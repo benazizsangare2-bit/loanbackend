@@ -125,9 +125,16 @@ def create_password_reset_token(db: Session, email: str):
     if not user:
         return False, "User not found"
     
-    # Generate reset token
-    reset_token = auth_utils.create_access_token(data={"sub": email, "type": "password_reset"})
-    reset_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+    # Generate reset token - give it its own 1 hour lifetime, independent of
+    # ACCESS_TOKEN_EXPIRE_MINUTES (which governs login sessions and can be
+    # much shorter), so the token stays valid for as long as reset_token_expiry
+    # says and as long as the email promises.
+    reset_expiry_delta = timedelta(hours=1)
+    reset_token = auth_utils.create_access_token(
+        data={"sub": email, "type": "password_reset"},
+        expires_delta=reset_expiry_delta,
+    )
+    reset_expiry = datetime.now(timezone.utc) + reset_expiry_delta
     
     user.reset_token = reset_token
     user.reset_token_expiry = reset_expiry
